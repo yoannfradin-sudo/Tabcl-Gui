@@ -26,6 +26,51 @@ pip install -r requirements.txt
 python app.py
 ```
 
+## Installation sur une machine hors ligne
+
+L'application peut être empaquetée avec **toutes ses dépendances** pour une
+machine sans accès Internet.
+
+### 1. Sur une machine connectée — fabriquer le bundle
+
+```bash
+./scripts/bundle_offline.sh
+```
+
+Cela produit `tabicl-gui-offline.tar.gz` contenant le code, toutes les wheels
+Python, et (si possible) le checkpoint TabICL pré-téléchargé.
+
+> **Plateforme cible différente ?** Si la machine hors ligne tourne sous un
+> autre OS/architecture, précisez-le :
+> ```bash
+> TARGET_PLATFORM=manylinux2014_x86_64 TARGET_PYTHON=311 ./scripts/bundle_offline.sh
+> # Windows : TARGET_PLATFORM=win_amd64
+> # macOS ARM : TARGET_PLATFORM=macosx_11_0_arm64
+> ```
+
+### 2. Sur la machine hors ligne — installer
+
+```bash
+tar -xzf tabicl-gui-offline.tar.gz
+cd tabicl-gui-offline
+./install_offline.sh
+```
+
+Puis lancer :
+
+```bash
+source .venv/bin/activate
+python app.py
+```
+
+### Note sur le checkpoint du modèle
+
+TabICL télécharge normalement son checkpoint au premier usage. Hors ligne,
+ce n'est pas possible. Le script de bundle tente de l'embarquer dans
+`checkpoints/`. Au lancement de l'app, indiquez ce fichier `.ckpt` via le
+champ **« Checkpoint local »** de l'onglet *Entraînement* (cela désactive
+le téléchargement automatique).
+
 ## Prérequis
 
 - Python 3.10+

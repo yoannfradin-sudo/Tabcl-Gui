@@ -5,6 +5,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox,
     QSpinBox, QDoubleSpinBox, QCheckBox, QGroupBox, QRadioButton,
     QTextEdit, QProgressBar, QMessageBox, QButtonGroup, QSizePolicy,
+    QLineEdit, QFileDialog,
 )
 from sklearn.model_selection import train_test_split
 
@@ -87,6 +88,17 @@ class TrainTab(QWidget):
         row2.addStretch()
         grid.addLayout(row2)
 
+        # Checkpoint local (utile en environnement hors ligne)
+        row3 = QHBoxLayout()
+        row3.addWidget(QLabel("Checkpoint local :"))
+        self._ckpt_edit = QLineEdit()
+        self._ckpt_edit.setPlaceholderText("(vide = téléchargement auto / cache)")
+        self._btn_ckpt = QPushButton("Parcourir…")
+        self._btn_ckpt.clicked.connect(self._pick_checkpoint)
+        row3.addWidget(self._ckpt_edit, 1)
+        row3.addWidget(self._btn_ckpt)
+        grid.addLayout(row3)
+
         root.addWidget(params_box)
 
         # ── Run controls ───────────────────────────────────────────────
@@ -168,6 +180,11 @@ class TrainTab(QWidget):
         if device_val != "auto":
             params["device"] = device_val
 
+        ckpt = self._ckpt_edit.text().strip()
+        if ckpt:
+            params["model_path"] = ckpt
+            params["allow_auto_download"] = False
+
         self.state.update({
             "task": task,
             "X_train": X_train, "X_test": X_test,
@@ -187,6 +204,13 @@ class TrainTab(QWidget):
         self._worker.finished.connect(self._on_finished)
         self._worker.error.connect(self._on_error)
         self._worker.start()
+
+    def _pick_checkpoint(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Sélectionner un checkpoint TabICL", "", "Checkpoint (*.ckpt);;Tous (*)"
+        )
+        if path:
+            self._ckpt_edit.setText(path)
 
     def _stop(self):
         if self._worker:
