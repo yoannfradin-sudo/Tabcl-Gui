@@ -1,10 +1,14 @@
+import numpy as np
 import pandas as pd
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,
     QFileDialog, QTableWidget, QTableWidgetItem, QComboBox, QListWidget,
     QListWidgetItem, QGroupBox, QSplitter, QMessageBox, QAbstractItemView,
+    QTabWidget,
 )
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+from matplotlib.figure import Figure
 
 from tabicl_gui.utils import load_data
 
@@ -54,16 +58,43 @@ class DataTab(QWidget):
         # ── Main splitter: preview | column config ────────────────────
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
-        # Preview pane
-        preview_group = QGroupBox("Aperçu des données")
-        prev_layout = QVBoxLayout(preview_group)
+        # Left pane: sub-tabs (Aperçu / Exploration)
+        left_tabs = QTabWidget()
+
+        # ── Sub-tab 1 : Aperçu ────────────────────────────────────────
+        preview_widget = QWidget()
+        prev_layout = QVBoxLayout(preview_widget)
         self._info_label = QLabel("")
         prev_layout.addWidget(self._info_label)
         self._table = QTableWidget()
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._table.setAlternatingRowColors(True)
         prev_layout.addWidget(self._table)
-        splitter.addWidget(preview_group)
+        left_tabs.addTab(preview_widget, "Aperçu")
+
+        # ── Sub-tab 2 : Exploration ───────────────────────────────────
+        eda_widget = QWidget()
+        eda_layout = QVBoxLayout(eda_widget)
+
+        eda_ctrl = QHBoxLayout()
+        eda_ctrl.addWidget(QLabel("Colonne :"))
+        self._eda_col_combo = QComboBox()
+        self._eda_col_combo.currentTextChanged.connect(self._draw_column_chart)
+        eda_ctrl.addWidget(self._eda_col_combo, 1)
+        self._btn_corr   = QPushButton("Corrélation")
+        self._btn_corr.clicked.connect(self._draw_correlation)
+        self._btn_missing = QPushButton("Valeurs manquantes")
+        self._btn_missing.clicked.connect(self._draw_missing)
+        eda_ctrl.addWidget(self._btn_corr)
+        eda_ctrl.addWidget(self._btn_missing)
+        eda_layout.addLayout(eda_ctrl)
+
+        self._eda_fig    = Figure(figsize=(6, 3), tight_layout=True)
+        self._eda_canvas = FigureCanvasQTAgg(self._eda_fig)
+        eda_layout.addWidget(self._eda_canvas, 1)
+        left_tabs.addTab(eda_widget, "Exploration")
+
+        splitter.addWidget(left_tabs)
 
         # Column config pane
         col_group = QGroupBox("Configuration des colonnes")
@@ -158,7 +189,96 @@ class DataTab(QWidget):
         self._target_combo.setCurrentIndex(len(df.columns) - 1)
         self._target_combo.blockSignals(False)
 
+        self._eda_col_combo.blockSignals(True)
+        self._eda_col_combo.clear()
+        self._eda_col_combo.addItems(list(df.columns))
+        self._eda_col_combo.blockSignals(False)
+
         self._refresh_feature_list()
+        if len(df.columns):
+            self._draw_column_chart(df.columns[0])
+
+    # ------------------------------------------------------------------
+    # EDA charts
+    # ------------------------------------------------------------------
+
+    def _draw_column_chart(self, col: str):
+        if self._df is None or not col or col not in self._df.columns:
+            return
+        s = self._df[col].dropna()
+        self._eda_fig.clear()
+        ax = self._eda_fig.add_subplot(111)
+
+        if pd.api.types.is_numeric_dtype(s) and s.nunique() > 5:
+            # Histogram + outlier markers
+            ax.hist(s, bins=30, color="#4C72B0", edgecolor="white", alpha=0.8, label="Valeurs")
+            q1, q3 = s.quantile(0.25), s.quantile(0.75)
+            iqr = q3 - q1
+            lo, hi = q1 - 1.5 * iqr, q3 + 1.5 * iqr
+            outliers = s[(s < lo) | (s > hi)]
+            if not outliers.empty:
+                ax.axvline(lo, color="red", ls="--", lw=1.2, label=f"Bornes IQR ({len(outliers)} outliers)")
+                ax.axvline(hi, color="red", ls="--", lw=1.2)
+            ax.set_xlabel(col)
+            ax.set_ylabel("Effectif")
+            ax.set_title(f"Distribution de '{col}'")
+            if not outliers.empty:
+                ax.legend(fontsize=8)
+        else:
+            # Bar chart of value counts
+            vc = self._df[col].value_counts().head(20)
+            ax.barh(vc.index.astype(str)[::-1], vc.values[::-1], color="#4C72B0")
+            ax.set_xlabel("Effectif")
+            ax.set_title(f"Fréquences de '{col}'")
+
+        n_nan = int(self._df[col].isnull().sum())
+        if n_nan:
+            ax.set_title(ax.get_title() + f"  [{n_nan} NaN]")
+
+        self._eda_canvas.draw()
+
+    def _draw_correlation(self):
+        if self._df is None:
+            return
+        num_df = self._df.select_dtypes(include="number")
+        if num_df.shape[1] < 2:
+            QMessageBox.information(self, "Corrélation", "Pas assez de colonnes numériques.")
+            return
+        corr = num_df.corr()
+        self._eda_fig.clear()
+        ax = self._eda_fig.add_subplot(111)
+        im = ax.imshow(corr.values, vmin=-1, vmax=1, cmap="RdBu_r")
+        self._eda_fig.colorbar(im, ax=ax, fraction=0.046)
+        ax.set_xticks(range(len(corr.columns)))
+        ax.set_yticks(range(len(corr.columns)))
+        ax.set_xticklabels(corr.columns, rotation=45, ha="right", fontsize=7)
+        ax.set_yticklabels(corr.columns, fontsize=7)
+        for i in range(len(corr)):
+            for j in range(len(corr.columns)):
+                ax.text(j, i, f"{corr.values[i, j]:.2f}",
+                        ha="center", va="center", fontsize=6,
+                        color="white" if abs(corr.values[i, j]) > 0.5 else "black")
+        ax.set_title("Matrice de corrélation")
+        self._eda_canvas.draw()
+
+    def _draw_missing(self):
+        if self._df is None:
+            return
+        miss = self._df.isnull().sum()
+        miss = miss[miss > 0].sort_values()
+        if miss.empty:
+            QMessageBox.information(self, "Valeurs manquantes", "Aucune valeur manquante.")
+            return
+        self._eda_fig.clear()
+        ax = self._eda_fig.add_subplot(111)
+        pct = miss / len(self._df) * 100
+        bars = ax.barh(miss.index.astype(str), pct.values, color="#DD8452")
+        ax.set_xlabel("% manquant")
+        ax.set_title("Valeurs manquantes par colonne")
+        for bar, v in zip(bars, miss.values):
+            ax.text(bar.get_width() + 0.3, bar.get_y() + bar.get_height() / 2,
+                    f"{v}", va="center", fontsize=8)
+        self._eda_canvas.draw()
 
     def _refresh_feature_list(self):
         if self._df is None:

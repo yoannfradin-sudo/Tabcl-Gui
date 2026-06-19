@@ -3,6 +3,76 @@ import numpy as np
 from PyQt6.QtCore import QThread, pyqtSignal
 
 
+class CVWorker(QThread):
+    """K-fold cross-validation with TabICL in a background thread.
+
+    Emits fold-by-fold progress then the concatenated predictions
+    in the original row order so ResultsTab can compute mean ± std.
+    """
+
+    progress  = pyqtSignal(str)
+    fold_done = pyqtSignal(int, int)               # fold_idx, k
+    finished  = pyqtSignal(object, object, object) # all_preds, all_true, last_model
+    error     = pyqtSignal(str)
+
+    def __init__(self, task, params, X, y, k=5, stratified=True, parent=None):
+        super().__init__(parent)
+        self.task       = task
+        self.params     = params
+        self.X          = X   # numpy array
+        self.y          = y   # numpy array
+        self.k          = k
+        self.stratified = stratified
+        self._stopped   = False
+
+    def stop(self):
+        self._stopped = True
+
+    def run(self):
+        try:
+            from sklearn.model_selection import StratifiedKFold, KFold
+
+            if self.task == "classification":
+                from tabicl import TabICLClassifier as ModelCls
+            else:
+                from tabicl import TabICLRegressor as ModelCls
+
+            splitter = (
+                StratifiedKFold(n_splits=self.k, shuffle=True, random_state=42)
+                if (self.task == "classification" and self.stratified)
+                else KFold(n_splits=self.k, shuffle=True, random_state=42)
+            )
+
+            all_preds  = np.empty(len(self.y), dtype=object)
+            all_true   = np.empty(len(self.y), dtype=object)
+            last_model = None
+
+            for fold_idx, (train_idx, val_idx) in enumerate(
+                splitter.split(self.X, self.y)
+            ):
+                if self._stopped:
+                    return
+                self.progress.emit(f"Fold {fold_idx + 1}/{self.k} — entraînement…")
+
+                X_tr, X_val = self.X[train_idx], self.X[val_idx]
+                y_tr, y_val = self.y[train_idx], self.y[val_idx]
+
+                model = ModelCls(**self.params)
+                model.fit(X_tr, y_tr)
+                preds = model.predict(X_val)
+
+                all_preds[val_idx] = preds
+                all_true[val_idx]  = y_val
+                last_model = model
+
+                self.fold_done.emit(fold_idx + 1, self.k)
+
+            self.progress.emit(f"Cross-validation terminée ({self.k} folds).")
+            self.finished.emit(all_preds, all_true, last_model)
+
+        except Exception:
+            self.error.emit(traceback.format_exc())
+
 class TrainWorker(QThread):
     """Run TabICL fit + predict in a background thread."""
 

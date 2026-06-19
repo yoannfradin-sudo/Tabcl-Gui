@@ -1,5 +1,8 @@
+import base64
+import io
 import numpy as np
 import pandas as pd
+from datetime import datetime
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTableWidget,
@@ -83,9 +86,14 @@ class ResultsTab(QWidget):
         self._pred_table.setAlternatingRowColors(True)
         pred_layout.addWidget(self._pred_table)
 
+        btn_row = QHBoxLayout()
         self._btn_export = QPushButton("Exporter les prédictions (CSV)…")
         self._btn_export.clicked.connect(self._export)
-        pred_layout.addWidget(self._btn_export)
+        btn_row.addWidget(self._btn_export)
+        self._btn_export_html = QPushButton("Générer rapport HTML…")
+        self._btn_export_html.clicked.connect(self._export_html)
+        btn_row.addWidget(self._btn_export_html)
+        pred_layout.addLayout(btn_row)
 
         right_layout.addWidget(pred_box, 1)
         splitter.addWidget(right)
@@ -100,14 +108,24 @@ class ResultsTab(QWidget):
     def on_training_done(self, state: dict):
         self.state = state
         task = state.get("task", "classification")
-        y_test = state["y_test"].values
-        preds = state["predictions"]
-        probas = state.get("probas")
+        cv_mode = state.get("cv_mode", False)
+        k = state.get("cv_k", 5)
+
+        if cv_mode:
+            y_vals = state["cv_true"]
+            preds = state["cv_preds"]
+            probas = None
+        else:
+            y_vals = state["y_test"].values
+            preds = state["predictions"]
+            probas = state.get("probas")
+
+        suffix = f"\n(cross-validé, {k} folds)" if cv_mode else ""
 
         if task == "classification":
-            m = compute_classification_metrics(y_test, preds, probas)
+            m = compute_classification_metrics(y_vals, preds, probas)
             parts = [
-                f"Accuracy : {m['accuracy']:.4f}",
+                f"Accuracy : {m['accuracy']:.4f}{suffix}",
                 f"F1 : {m['f1']:.4f}",
             ]
             if "roc_auc" in m:
@@ -116,17 +134,17 @@ class ResultsTab(QWidget):
             self._report_text.setPlainText(m.get("report", ""))
             self._draw_confusion(m["confusion_matrix"], m["classes"])
         else:
-            m = compute_regression_metrics(y_test, preds)
+            m = compute_regression_metrics(y_vals, preds)
             parts = [
-                f"RMSE : {m['rmse']:.4f}",
+                f"RMSE : {m['rmse']:.4f}{suffix}",
                 f"MAE  : {m['mae']:.4f}",
                 f"R²   : {m['r2']:.4f}",
             ]
             self._metrics_label.setText("\n".join(parts))
             self._report_text.clear()
-            self._draw_scatter(y_test, preds)
+            self._draw_scatter(y_vals, preds)
 
-        self._populate_pred_table(state, preds, probas, task)
+        self._populate_pred_table(state, preds, probas, task, cv_mode)
 
     # ------------------------------------------------------------------
     # Charts
@@ -165,9 +183,15 @@ class ResultsTab(QWidget):
     # Predictions table
     # ------------------------------------------------------------------
 
-    def _populate_pred_table(self, state, preds, probas, task):
-        y_test = state["y_test"]
-        idx = y_test.index.tolist()
+    def _populate_pred_table(self, state, preds, probas, task, cv_mode=False):
+        if cv_mode:
+            y_vals = state["cv_true"]
+            idx = list(range(len(y_vals)))
+        else:
+            y_test = state["y_test"]
+            idx = y_test.index.tolist()
+            y_vals = y_test.values
+
         has_proba = probas is not None and task == "classification"
 
         cols = ["Index", "Y réel", "Y prédit"]
@@ -180,7 +204,6 @@ class ResultsTab(QWidget):
         self._pred_table.setColumnCount(len(cols))
         self._pred_table.setHorizontalHeaderLabels(cols)
 
-        y_vals = y_test.values
         for r in range(len(preds)):
             items = [str(idx[r]), str(y_vals[r]), str(preds[r])]
             if has_proba and probas.ndim == 2:
@@ -203,16 +226,133 @@ class ResultsTab(QWidget):
         if not path:
             return
         preds = self.state["predictions"]
-        y_test = self.state["y_test"]
         probas = self.state.get("probas")
         task = self.state.get("task", "classification")
+        cv_mode = self.state.get("cv_mode", False)
 
-        df = pd.DataFrame({"index": y_test.index, "y_true": y_test.values, "y_pred": preds})
-        if probas is not None and task == "classification" and probas.ndim == 2:
-            for k in range(probas.shape[1]):
-                df[f"proba_{k}"] = probas[:, k]
+        if cv_mode:
+            y_vals = self.state["cv_true"]
+            df = pd.DataFrame({"index": range(len(y_vals)), "y_true": y_vals, "y_pred": preds})
+        else:
+            y_test = self.state["y_test"]
+            df = pd.DataFrame({"index": y_test.index, "y_true": y_test.values, "y_pred": preds})
+            if probas is not None and task == "classification" and probas.ndim == 2:
+                for k in range(probas.shape[1]):
+                    df[f"proba_{k}"] = probas[:, k]
         df.to_csv(path, index=False)
         QMessageBox.information(self, "Exporté", f"Prédictions sauvegardées dans :\n{path}")
+
+    def _export_html(self):
+        if "predictions" not in self.state:
+            QMessageBox.warning(self, "Pas de prédictions", "Lancez d'abord un entraînement.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Enregistrer le rapport HTML", "rapport_tabicl.html", "HTML (*.html)"
+        )
+        if not path:
+            return
+
+        task = self.state.get("task", "classification")
+        cv_mode = self.state.get("cv_mode", False)
+        k = self.state.get("cv_k", 5)
+        features = self.state.get("features", [])
+        target = self.state.get("target", "")
+
+        if cv_mode:
+            y_vals = self.state["cv_true"]
+            preds = self.state["cv_preds"]
+            probas = None
+        else:
+            y_vals = self.state["y_test"].values
+            preds = self.state["predictions"]
+            probas = self.state.get("probas")
+
+        # Encode main figure
+        buf = io.BytesIO()
+        self._fig.savefig(buf, format="png", dpi=100, bbox_inches="tight")
+        fig_b64 = base64.b64encode(buf.getvalue()).decode()
+
+        # Encode SHAP figure if axes present
+        shap_b64 = None
+        try:
+            if self._shap_fig.get_axes():
+                buf2 = io.BytesIO()
+                self._shap_fig.savefig(buf2, format="png", dpi=100, bbox_inches="tight")
+                shap_b64 = base64.b64encode(buf2.getvalue()).decode()
+        except Exception:
+            pass
+
+        # Compute metrics
+        if task == "classification":
+            m = compute_classification_metrics(y_vals, preds, probas)
+            metrics_rows = [("Accuracy", f"{m['accuracy']:.4f}"), ("F1 (weighted)", f"{m['f1']:.4f}")]
+            if "roc_auc" in m:
+                metrics_rows.append(("ROC-AUC", f"{m['roc_auc']:.4f}"))
+        else:
+            m = compute_regression_metrics(y_vals, preds)
+            metrics_rows = [
+                ("RMSE", f"{m['rmse']:.4f}"), ("MAE", f"{m['mae']:.4f}"),
+                ("R²", f"{m['r2']:.4f}"), ("MSE", f"{m['mse']:.4f}"),
+            ]
+
+        mode_str = f"Cross-validation ({k} folds)" if cv_mode else "Train / Test split"
+        feat_preview = ", ".join(features[:10]) + ("…" if len(features) > 10 else "")
+        rows_html = "\n".join(f"  <tr><td>{n}</td><td><b>{v}</b></td></tr>" for n, v in metrics_rows)
+        n_show = min(50, len(preds))
+        pred_rows = "\n".join(
+            f"  <tr><td>{i}</td><td>{y_vals[i]}</td><td>{preds[i]}</td></tr>"
+            for i in range(n_show)
+        )
+        shap_section = (
+            f'<h2>Explicabilité SHAP</h2>'
+            f'<img src="data:image/png;base64,{shap_b64}" style="max-width:100%;"/>'
+            if shap_b64 else ""
+        )
+
+        html = f"""<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>Rapport TabICL — {datetime.now():%Y-%m-%d %H:%M}</title>
+<style>
+  body {{ font-family: sans-serif; margin: 40px; color: #333; }}
+  h1 {{ color: #2c5f8a; }} h2 {{ color: #4a4a4a; border-bottom: 1px solid #ccc; padding-bottom: 4px; }}
+  table {{ border-collapse: collapse; margin: 12px 0; }}
+  th, td {{ border: 1px solid #ccc; padding: 6px 12px; text-align: left; }}
+  th {{ background: #f0f0f0; }} tr:nth-child(even) {{ background: #f9f9f9; }}
+  img {{ border: 1px solid #ddd; border-radius: 4px; margin: 8px 0; }}
+</style>
+</head>
+<body>
+<h1>Rapport TabICL</h1>
+<p>Généré le {datetime.now():%Y-%m-%d à %H:%M}</p>
+<h2>Paramètres</h2>
+<table>
+  <tr><th>Paramètre</th><th>Valeur</th></tr>
+  <tr><td>Tâche</td><td>{task}</td></tr>
+  <tr><td>Cible</td><td>{target}</td></tr>
+  <tr><td>Features ({len(features)})</td><td>{feat_preview}</td></tr>
+  <tr><td>Mode</td><td>{mode_str}</td></tr>
+</table>
+<h2>Métriques</h2>
+<table>
+  <tr><th>Métrique</th><th>Valeur</th></tr>
+{rows_html}
+</table>
+<h2>Visualisation</h2>
+<img src="data:image/png;base64,{fig_b64}" style="max-width:100%;"/>
+{shap_section}
+<h2>Prédictions (50 premières)</h2>
+<table>
+  <tr><th>#</th><th>Y réel</th><th>Y prédit</th></tr>
+{pred_rows}
+</table>
+</body>
+</html>"""
+
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(html)
+        QMessageBox.information(self, "Exporté", f"Rapport HTML sauvegardé dans :\n{path}")
 
     # ------------------------------------------------------------------
     # SHAP
@@ -221,6 +361,12 @@ class ResultsTab(QWidget):
     def _run_shap(self):
         if "model" not in self.state:
             QMessageBox.warning(self, "Pas de modèle", "Lancez d'abord un entraînement.")
+            return
+        if "X_test" not in self.state:
+            QMessageBox.warning(
+                self, "Mode cross-validation",
+                "SHAP n'est pas disponible en mode cross-validation (pas de jeu de test isolé).",
+            )
             return
         self._shap_progress.setRange(0, 0)
         self._btn_shap.setEnabled(False)
