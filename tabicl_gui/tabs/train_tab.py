@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
 from sklearn.model_selection import train_test_split
 
 from tabicl_gui.utils import detect_task_type
-from tabicl_gui.workers import TrainWorker
+from tabicl_gui.workers import CVWorker, TrainWorker
 
 
 class TrainTab(QWidget):
@@ -41,19 +41,40 @@ class TrainTab(QWidget):
         task_layout.addStretch()
         root.addWidget(task_box)
 
-        # ── Split ─────────────────────────────────────────────────────
+        # ── Split / CV ────────────────────────────────────────────────
         split_box = QGroupBox("Division train / test")
-        split_layout = QHBoxLayout(split_box)
-        split_layout.addWidget(QLabel("Ratio test :"))
+        split_layout = QVBoxLayout(split_box)
+
+        row_split = QHBoxLayout()
+        row_split.addWidget(QLabel("Ratio test :"))
         self._test_ratio = QDoubleSpinBox()
         self._test_ratio.setRange(0.05, 0.5)
         self._test_ratio.setSingleStep(0.05)
         self._test_ratio.setValue(0.2)
-        split_layout.addWidget(self._test_ratio)
+        row_split.addWidget(self._test_ratio)
         self._stratify_cb = QCheckBox("Stratification")
         self._stratify_cb.setChecked(True)
-        split_layout.addWidget(self._stratify_cb)
-        split_layout.addStretch()
+        row_split.addWidget(self._stratify_cb)
+        row_split.addStretch()
+        split_layout.addLayout(row_split)
+
+        row_cv = QHBoxLayout()
+        self._cv_cb = QCheckBox("Validation croisée k-fold")
+        self._cv_cb.toggled.connect(self._on_cv_toggled)
+        row_cv.addWidget(self._cv_cb)
+        row_cv.addWidget(QLabel("  k :"))
+        self._k_spin = QSpinBox()
+        self._k_spin.setRange(2, 20)
+        self._k_spin.setValue(5)
+        self._k_spin.setEnabled(False)
+        row_cv.addWidget(self._k_spin)
+        self._cv_warn = QLabel("⚠ Attention : k × plus lent")
+        self._cv_warn.setStyleSheet("color: #b05000; font-size: 11px;")
+        self._cv_warn.setVisible(False)
+        row_cv.addWidget(self._cv_warn)
+        row_cv.addStretch()
+        split_layout.addLayout(row_cv)
+
         root.addWidget(split_box)
 
         # ── TabICL params ──────────────────────────────────────────────
@@ -174,16 +195,6 @@ class TrainTab(QWidget):
             X = df[features]
             y = df[target]
 
-        ratio = self._test_ratio.value()
-        stratify = y if (task == "classification" and self._stratify_cb.isChecked()) else None
-        try:
-            X_train, X_test, y_train, y_test = train_test_split(
-                X, y, test_size=ratio, random_state=self._seed.value(), stratify=stratify
-            )
-        except ValueError as exc:
-            QMessageBox.critical(self, "Erreur split", str(exc))
-            return
-
         device_val = self._device.currentText()
         params = {
             "n_estimators": self._n_est.value(),
@@ -199,25 +210,95 @@ class TrainTab(QWidget):
             params["model_path"] = ckpt
             params["allow_auto_download"] = False
 
-        self.state.update({
-            "task": task,
-            "X_train": X_train, "X_test": X_test,
-            "y_train": y_train, "y_test": y_test,
-        })
-
         self._log.clear()
-        self._log.append(
-            f"Train : {len(X_train)} | Test : {len(X_test)} | Task : {task}"
-        )
-        self._progress.setRange(0, 0)
         self._btn_run.setEnabled(False)
         self._btn_stop.setEnabled(True)
 
-        self._worker = TrainWorker(task, params, X_train.values, y_train.values, X_test.values)
-        self._worker.progress.connect(self._log.append)
-        self._worker.finished.connect(self._on_finished)
-        self._worker.error.connect(self._on_error)
-        self._worker.start()
+        if self._cv_cb.isChecked():
+            k = self._k_spin.value()
+            stratified = task == "classification"
+            self.state.update({"task": task, "cv_mode": True, "cv_k": k})
+            self._log.append(
+                f"Cross-validation {k}-fold | Task : {task} | {len(X)} échantillons"
+            )
+            self._progress.setRange(0, k)
+            self._progress.setValue(0)
+            self._worker = CVWorker(task, params, X.values, y.values, k=k, stratified=stratified)
+            self._worker.progress.connect(self._log.append)
+            self._worker.fold_done.connect(lambda fi, _k: self._progress.setValue(fi))
+            self._worker.finished.connect(self._on_cv_finished)
+            self._worker.error.connect(self._on_error)
+            self._worker.start()
+        else:
+            ratio = self._test_ratio.value()
+            stratify = y if (task == "classification" and self._stratify_cb.isChecked()) else None
+            try:
+                X_train, X_test, y_train, y_test = train_test_split(
+                    X, y, test_size=ratio, random_state=self._seed.value(), stratify=stratify
+                )
+            except ValueError as exc:
+                QMessageBox.critical(self, "Erreur split", str(exc))
+                self._reset_progress()
+                return
+
+            self.state.update({
+                "task": task, "cv_mode": False,
+                "X_train": X_train, "X_test": X_test,
+                "y_train": y_train, "y_test": y_test,
+            })
+            self._log.append(
+                f"Train : {len(X_train)} | Test : {len(X_test)} | Task : {task}"
+            )
+            self._progress.setRange(0, 0)
+            self._worker = TrainWorker(task, params, X_train.values, y_train.values, X_test.values)
+            self._worker.progress.connect(self._log.append)
+            self._worker.finished.connect(self._on_finished)
+            self._worker.error.connect(self._on_error)
+            self._worker.start()
+
+    def _on_cv_toggled(self, checked: bool):
+        self._k_spin.setEnabled(checked)
+        self._cv_warn.setVisible(checked)
+        self._test_ratio.setEnabled(not checked)
+        self._stratify_cb.setEnabled(not checked)
+
+    def _on_cv_finished(self, all_preds, all_true, last_model):
+        self._reset_progress()
+        k = self.state.get("cv_k", self._k_spin.value())
+
+        # Injection LLM : bornage des prédictions (régression)
+        task = self.state.get("task")
+        constraints = self.state.get("constraints")
+        if (
+            task == "regression"
+            and constraints
+            and self.state.get("constraints_apply_preds")
+        ):
+            target = self.state.get("target")
+            tc = constraints.get(target)
+            if tc and (tc.get("min") is not None or tc.get("max") is not None):
+                from tabicl_gui.llm import clip_predictions
+                all_preds = clip_predictions(all_preds, tc)
+                self._log.append(
+                    f"[LLM] Prédictions bornées à [{tc.get('min')}, {tc.get('max')}]."
+                )
+
+        # Cast from object dtype (used in CVWorker) to concrete dtype for sklearn
+        try:
+            all_preds = np.array(all_preds.tolist())
+            all_true = np.array(all_true.tolist())
+        except Exception:
+            pass
+
+        self.state["model"] = last_model
+        self.state["predictions"] = all_preds
+        self.state["probas"] = None
+        self.state["cv_preds"] = all_preds
+        self.state["cv_true"] = all_true
+        self._log.append(
+            f"Cross-validation terminée ({k} folds) — résultats disponibles dans l'onglet Résultats."
+        )
+        self.training_done.emit(self.state)
 
     def _pick_checkpoint(self):
         path, _ = QFileDialog.getOpenFileName(

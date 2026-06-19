@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from tabicl_gui.workers import LLMWorker, TrainWorker
+from tabicl_gui.workers import CVWorker, LLMWorker, TrainWorker
 
 
 # ── helpers ───────────────────────────────────────────────────────────
@@ -139,6 +139,53 @@ class TestTrainWorkerRegression:
         _, preds, probas = blocker.args
         assert len(preds) == 5
         assert probas is None
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# CVWorker
+# ═══════════════════════════════════════════════════════════════════════
+
+class TestCVWorker:
+    def _clf_mock(self):
+        """predict adapts to fold size via side_effect."""
+        clf_instance = MagicMock()
+        clf_instance.predict.side_effect = lambda X: np.zeros(len(X), dtype=int)
+        return MagicMock(return_value=clf_instance)
+
+    def test_finished_signal_classification(self, qtbot, qapp_instance):
+        X, y = _make_X_y(n=30, f=4)
+        clf_cls = self._clf_mock()
+
+        mock_tabicl = MagicMock()
+        mock_tabicl.TabICLClassifier = clf_cls
+
+        worker = CVWorker("classification", {}, X, y, k=3, stratified=True)
+        with patch.dict(sys.modules, {"tabicl": mock_tabicl}):
+            with qtbot.waitSignal(worker.finished, timeout=10000) as blocker:
+                worker.start()
+                worker.wait(10000)
+
+        all_preds, all_true, last_model = blocker.args
+        assert len(all_preds) == len(y)
+        assert len(all_true) == len(y)
+        assert last_model is not None
+
+    def test_error_signal_on_fit_failure(self, qtbot, qapp_instance):
+        X, y = _make_X_y(n=20, f=4)
+
+        clf_cls = MagicMock()
+        clf_cls.return_value.fit.side_effect = RuntimeError("CV test error")
+
+        mock_tabicl = MagicMock()
+        mock_tabicl.TabICLClassifier = clf_cls
+
+        worker = CVWorker("classification", {}, X, y, k=3, stratified=True)
+        with patch.dict(sys.modules, {"tabicl": mock_tabicl}):
+            with qtbot.waitSignal(worker.error, timeout=10000) as blocker:
+                worker.start()
+                worker.wait(10000)
+
+        assert "RuntimeError" in blocker.args[0]
 
 
 # ═══════════════════════════════════════════════════════════════════════

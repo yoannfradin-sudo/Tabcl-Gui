@@ -258,3 +258,43 @@ class TestResultsTab:
         with patch("PyQt6.QtWidgets.QMessageBox.warning") as mock_warn:
             tab._run_shap()
             mock_warn.assert_called_once()
+
+    def test_export_html_without_predictions_shows_warning(self, qtbot, tab, state):
+        with patch("PyQt6.QtWidgets.QMessageBox.warning") as mock_warn:
+            tab._export_html()
+            mock_warn.assert_called_once()
+
+    def test_export_html_with_predictions_creates_file(self, qtbot, tab, state, sample_df_clf, tmp_path):
+        s = self._clf_state(state, sample_df_clf)
+        tab.on_training_done(s)
+        html_path = str(tmp_path / "rapport.html")
+        with patch("PyQt6.QtWidgets.QFileDialog.getSaveFileName", return_value=(html_path, "")):
+            with patch("PyQt6.QtWidgets.QMessageBox.information"):
+                tab._export_html()
+        assert os.path.isfile(html_path)
+        content = open(html_path, encoding="utf-8").read()
+        assert "Rapport TabICL" in content
+        assert "Accuracy" in content
+
+    def test_cv_mode_metrics_display(self, qtbot, tab, state):
+        rng = np.random.default_rng(42)
+        n = 30
+        all_true = rng.integers(0, 2, n)
+        all_preds = rng.integers(0, 2, n)
+        state.update({
+            "task": "classification",
+            "cv_mode": True,
+            "cv_k": 5,
+            "cv_true": all_true,
+            "cv_preds": all_preds,
+            "predictions": all_preds,
+            "probas": None,
+            "model": MagicMock(),
+            "features": ["f1", "f2"],
+            "target": "label",
+        })
+        tab.on_training_done(state)
+        label = tab._metrics_label.text()
+        assert "Accuracy" in label
+        assert "cross-validé" in label
+        assert "5 folds" in label
