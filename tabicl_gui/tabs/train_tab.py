@@ -157,8 +157,22 @@ class TrainTab(QWidget):
         features = self.state["features"]
         task = "classification" if self._rb_clf.isChecked() else "regression"
 
-        X = df[features]
-        y = df[target]
+        # Injection des connaissances métier (LLM) : nettoyage des données
+        constraints = self.state.get("constraints")
+        if constraints and self.state.get("constraints_apply_data"):
+            from tabicl_gui.llm import apply_constraints_to_data
+            mode = self.state.get("constraints_mode", "clip")
+            subset = df[features + [target]]
+            subset, report = apply_constraints_to_data(subset, constraints, mode)
+            for line in report:
+                self._log.append(f"[LLM] {line}")
+            if not report:
+                self._log.append("[LLM] Aucune valeur hors bornes détectée.")
+            X = subset[features]
+            y = subset[target]
+        else:
+            X = df[features]
+            y = df[target]
 
         ratio = self._test_ratio.value()
         stratify = y if (task == "classification" and self._stratify_cb.isChecked()) else None
@@ -221,6 +235,25 @@ class TrainTab(QWidget):
 
     def _on_finished(self, model, preds, probas):
         self._reset_progress()
+
+        # Injection des connaissances métier (LLM) : bornage des prédictions
+        task = self.state.get("task")
+        constraints = self.state.get("constraints")
+        if (
+            task == "regression"
+            and constraints
+            and self.state.get("constraints_apply_preds")
+        ):
+            target = self.state.get("target")
+            tc = constraints.get(target)
+            if tc and (tc.get("min") is not None or tc.get("max") is not None):
+                from tabicl_gui.llm import clip_predictions
+                preds = clip_predictions(preds, tc)
+                self._log.append(
+                    f"[LLM] Prédictions bornées à "
+                    f"[{tc.get('min')}, {tc.get('max')}] (cible '{target}')."
+                )
+
         self.state["model"] = model
         self.state["predictions"] = preds
         self.state["probas"] = probas

@@ -5,6 +5,7 @@ from PyQt6.QtGui import QAction
 from PyQt6.QtCore import Qt
 
 from tabicl_gui.tabs.data_tab import DataTab
+from tabicl_gui.tabs.knowledge_tab import KnowledgeTab
 from tabicl_gui.tabs.train_tab import TrainTab
 from tabicl_gui.tabs.results_tab import ResultsTab
 from tabicl_gui.tabs.forecast_tab import ForecastTab
@@ -50,12 +51,14 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self._tabs)
 
         self._data_tab = DataTab(self._state)
+        self._knowledge_tab = KnowledgeTab(self._state)
         self._train_tab = TrainTab(self._state)
         self._results_tab = ResultsTab(self._state)
         self._forecast_tab = ForecastTab(self._state)
         self._finetune_tab = FinetuneTab(self._state)
 
         self._tabs.addTab(self._data_tab, "Données")
+        self._tabs.addTab(self._knowledge_tab, "Connaissances (LLM)")
         self._tabs.addTab(self._train_tab, "Entraînement")
         self._tabs.addTab(self._results_tab, "Résultats")
         self._tabs.addTab(self._forecast_tab, "Prévision")
@@ -81,17 +84,18 @@ class MainWindow(QMainWindow):
             self._tabs.setTabEnabled(i, True)
 
         # Propagate to tabs that need it
+        self._knowledge_tab.on_data_confirmed(state)
         self._train_tab.on_data_confirmed(state)
         self._forecast_tab.on_data_confirmed(state)
         self._finetune_tab.on_data_confirmed(state)
 
-        # Navigate to train tab
+        # Navigate to the knowledge tab (étape métier avant l'entraînement)
         self._tabs.setCurrentIndex(1)
 
     def _on_training_done(self, state: dict):
         self._state.update(state)
         self._results_tab.on_training_done(state)
-        self._tabs.setCurrentIndex(2)
+        self._tabs.setCurrentIndex(3)   # onglet Résultats
 
     # ------------------------------------------------------------------
     # About

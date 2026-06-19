@@ -7,6 +7,7 @@ Application desktop (PyQt6) pour exploiter facilement [TabICL](https://github.co
 | Onglet | Description |
 |---|---|
 | **Données** | Chargement CSV / Excel / JSON / Parquet (local ou URL), aperçu, sélection des colonnes |
+| **Connaissances (LLM)** | Un LLM local (LM Studio) infère des contraintes métier par colonne (bornes physiques, unités) pour affiner les prédictions |
 | **Entraînement** | Classification ou régression, split train/test, paramètres TabICL |
 | **Résultats** | Métriques, matrice de confusion / scatter plot, export CSV des prédictions, SHAP |
 | **Prévision** | Séries temporelles univariées via `TabICLForecaster` |
@@ -25,6 +26,30 @@ pip install -r requirements.txt
 ```bash
 python app.py
 ```
+
+## Couche LLM : injection de connaissances métier
+
+L'onglet **Connaissances (LLM)** utilise votre serveur **LM Studio** local
+(API compatible OpenAI) comme expert métier afin d'affiner les prédictions
+statistiques pures de TabICL.
+
+**Principe :**
+1. Le LLM reçoit la description des colonnes (nom, type, statistiques, exemples).
+2. Il propose des contraintes métier réalistes : bornes physiques (ex. `Âge ∈ [0, 120]`),
+   unités, valeurs impossibles.
+3. Vous **vérifiez et corrigez** ces propositions dans une table éditable.
+4. Les contraintes sont injectées dans le pipeline :
+   - **Nettoyage des données d'entraînement** : bornage (clip) ou suppression (drop)
+     des valeurs aberrantes avant `fit`.
+   - **Bornage des prédictions** de régression à l'intervalle plausible de la cible.
+
+**Configuration LM Studio :**
+- Lancez LM Studio et démarrez le serveur local (onglet *Developer* → *Start Server*).
+- Base URL par défaut : `http://localhost:1234/v1`, clé API : `lm-studio` (factice).
+- Cliquez **« Lister les modèles »** pour récupérer le modèle chargé.
+
+> La couche LLM est entièrement optionnelle : sans contraintes validées,
+> l'entraînement utilise les données brutes.
 
 ## Installation sur une machine hors ligne
 

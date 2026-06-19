@@ -61,6 +61,30 @@ class TrainWorker(QThread):
             self.error.emit(traceback.format_exc())
 
 
+class LLMWorker(QThread):
+    """Interroge le LLM (LM Studio) pour inférer des contraintes métier."""
+
+    finished = pyqtSignal(object)   # constraints dict
+    error = pyqtSignal(str)
+    progress = pyqtSignal(str)
+
+    def __init__(self, client, df, columns, target, parent=None):
+        super().__init__(parent)
+        self.client = client
+        self.df = df
+        self.columns = columns
+        self.target = target
+
+    def run(self):
+        try:
+            self.progress.emit("Interrogation du LLM…")
+            constraints = self.client.analyze_columns(self.df, self.columns, self.target)
+            self.progress.emit("Analyse terminée.")
+            self.finished.emit(constraints)
+        except Exception:
+            self.error.emit(traceback.format_exc())
+
+
 class ShapWorker(QThread):
     """Compute SHAP values in background."""
 
